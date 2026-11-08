@@ -40,22 +40,18 @@ function addLog(msg, type = 'info') {
     console.log(`[${time}] [${type.toUpperCase()}] ${msg}`);
 }
 
-// 🔥 LIVE AUTO-PING RADAR (Network Latency Measure Engine)
 async function getDynamicNetworkOffset() {
-    addLog("📡 Pinging Pi Network Mainnet to calculate live MS latency...", "info");
     let pings = [];
     for (let i = 0; i < 4; i++) {
         const start = Date.now();
         try {
             await fetch(`${HORIZON_URL}/fee_stats`);
             pings.push(Date.now() - start);
-        } catch (e) {
-            pings.push(300);
-        }
+        } catch (e) { pings.push(300); }
     }
     const avgPing = Math.round(pings.reduce((a, b) => a + b, 0) / pings.length);
-    const autoOffset = avgPing + 150; // Ping + Internal Node Execution
-    addLog(`🎯 Live Ping: ${avgPing}ms | AUTO PRE-FIRE OFFSET SET TO: ${autoOffset}ms`, "success");
+    const autoOffset = avgPing + 150; 
+    addLog(`🎯 Live Ping: ${avgPing}ms | Pre-fire Offset: ${autoOffset}ms`, "success");
     return autoOffset;
 }
 
@@ -89,22 +85,15 @@ app.post('/api/arm', async (req, res) => {
 
     try {
         const [targetH, targetM, targetS] = targetTime.split(':').map(Number);
-        
-        // 1. EXACT MILLISECOND MATH (Render Safe Timezone Fix)
         const now = new Date();
         const nowISTString = now.toLocaleString("en-US", {timeZone: "Asia/Kolkata"});
         const nowIST = new Date(nowISTString);
         
         let targetIST = new Date(nowISTString);
         targetIST.setHours(targetH, targetM, targetS || 0, 0);
-        
-        if (targetIST.getTime() <= nowIST.getTime()) {
-            targetIST.setDate(targetIST.getDate() + 1); // Move to tomorrow if time passed
-        }
+        if (targetIST.getTime() <= nowIST.getTime()) targetIST.setDate(targetIST.getDate() + 1); 
         
         const delayMs = targetIST.getTime() - nowIST.getTime();
-        
-        // 2. UNIX TIMESTAMP FOR TIMEBOUNDS (Crucial for tx_too_early logic)
         const targetUnix = Math.floor((Date.now() + delayMs) / 1000);
         
         addLog(`Target locked: ${targetTime} IST. Precise Countdown: ${(delayMs/1000).toFixed(3)}s`, "info");
@@ -130,7 +119,6 @@ app.post('/api/arm', async (req, res) => {
         const OperationClass = StellarSdk.Operation;
         const AssetClass = StellarSdk.Asset;
 
-        // 3. MULTI-SEQUENCE PACKET BUILDER (Supports Multiple Sponsor Wallets)
         const tasks = sponsorPool.map(async (mn) => {
             const spKp = getKeypair(mn);
             if (!spKp) return null;
@@ -139,7 +127,6 @@ app.post('/api/arm', async (req, res) => {
             const builder = new TxBuilderClass(new AccountClass(spKp.publicKey(), acc.sequenceNumber()), {
                 fee: Math.round(parseFloat(surgeFee) * 10000000).toString(),
                 networkPassphrase: NETWORK_PASSPHRASE,
-                // 🔥 THE MAGIC: Prevents 'op_cannot_claim' Sequence Burn!
                 timebounds: {
                     minTime: targetUnix.toString(),
                     maxTime: (targetUnix + 600).toString() 
@@ -170,27 +157,34 @@ app.post('/api/arm', async (req, res) => {
         addLog(`✅ ${packets.length} Packets pre-signed with TimeBounds & Locked in RAM!`, "success");
         
         let dynamicOffset = 300; 
-        const pingMeasureDelay = Math.max(0, delayMs - 8000);
         
-        const radarTimer = setTimeout(async () => {
-            dynamicOffset = await getDynamicNetworkOffset();
-        }, pingMeasureDelay);
-        botState.timers.push(radarTimer);
+        // 🚀 THE NEW LEDGER SYNC ENGINE (Runs 10 seconds before unlock)
+        const syncDelay = Math.max(0, delayMs - 10000);
+        const ledgerSyncTimer = setTimeout(async () => {
+            try {
+                addLog("🧱 Scanning Pi Blockchain for Live Ledger Phase...", "info");
+                const ledgers = await fetch(`${HORIZON_URL}/ledgers?order=desc&limit=1`).then(r => r.json());
+                const lastLedgerTime = new Date(ledgers._embedded.records[0].closed_at);
+                const istTime = lastLedgerTime.toLocaleTimeString('en-US', {timeZone: 'Asia/Kolkata', hour12: false});
+                addLog(`⚡ LEDGER SYNC LOCK-ON: Last Ledger closed at ${istTime}. Tracking 5s Cycle...`, "success");
+                dynamicOffset = await getDynamicNetworkOffset();
+            } catch(e) {}
+        }, syncDelay);
+        botState.timers.push(ledgerSyncTimer);
 
-        // 4. 🔥 ASYNC GATLING GUN ENGINE (Spams every 300ms, starts 3 seconds early)
         const startDelay = Math.max(0, delayMs - 3000 - dynamicOffset);
         
         const masterTimer = setTimeout(() => {
-            addLog(`💥 GATLING GUN ACTIVATED! SPAMMING HORIZON EVERY 300ms...`, "warning");
+            addLog(`💥 GATLING GUN ACTIVATED (100ms SPEED)! PRE-LOADING MEMPOOL...`, "warning");
             
             let shotCount = 0;
-            let successFound = false;
+            let raceOver = false;
 
             const fireSpam = () => {
-                if (successFound) return;
+                if (raceOver) return;
                 shotCount++;
                 
-                if (shotCount > 100) { // Stops after 30 seconds to prevent endless loop
+                if (shotCount > 150) { 
                     clearInterval(spamInterval);
                     botState.isArmed = false;
                     addLog(`🛑 GATLING GUN STOPPED (Time window closed).`, "info");
@@ -203,27 +197,32 @@ app.post('/api/arm', async (req, res) => {
                         headers: {'Content-Type': 'application/x-www-form-urlencoded'},
                         body: `tx=${encodeURIComponent(w.xdr)}`
                     }).then(r => r.json()).then(d => {
-                        if (successFound) return; 
+                        if (raceOver) return; 
                         
                         if (d.hash) {
-                            successFound = true;
+                            raceOver = true;
                             addLog(`🏆 VICTORY! Transaction Mined! Hash: ${d.hash}`, "success");
                             clearInterval(spamInterval);
                             botState.isArmed = false;
                         } else {
-                            let errCode = JSON.stringify(d?.extras?.result_codes || d.title);
+                            let errCode = JSON.stringify(d?.extras?.result_codes || d.title || "");
                             
-                            // Mute expected errors (tx_too_early means we are knocking, tx_bad_seq means we won elsewhere)
-                            if (!errCode.includes("tx_too_early") && !errCode.includes("tx_bad_seq")) {
-                                addLog(`[Shot #${shotCount}] ❌ Failed: ${errCode}`, "error");
+                            if (errCode.includes("tx_too_early") || errCode.includes("tx_bad_seq")) {
+                                // Silent pre-fire mode (keeps sequences safe)
+                            } else {
+                                raceOver = true; 
+                                clearInterval(spamInterval);
+                                botState.isArmed = false;
+                                addLog(`🛑 RACE OVER: Ledger just closed and packet was rejected.`, "warning");
+                                addLog(`[Final Shot #${shotCount}] ❌ Failed: ${errCode}`, "error");
                             }
                         }
                     }).catch(e => {}); 
                 });
             };
 
-            fireSpam(); // Fire exact first shot immediately
-            const spamInterval = setInterval(fireSpam, 300); // Keep firing every 300ms
+            fireSpam(); 
+            const spamInterval = setInterval(fireSpam, 100); 
             botState.timers.push(spamInterval);
 
         }, startDelay);
