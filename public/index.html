@@ -1,1 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TITAN RAILWAY CLOUD SNIPER</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #08080c; color: #e2e8f0; font-family: 'Courier New', monospace; padding: 20px; }
+    .container { max-width: 650px; margin: 0 auto; background: #101016; border: 1px solid #1e293b; padding: 25px; border-radius: 12px; box-shadow: 0 0 20px rgba(16, 185, 129, 0.15); }
+    h1 { color: #10b981; font-size: 24px; text-align: center; margin-bottom: 5px; font-weight: 900; }
+    .subtitle { text-align: center; font-size: 11px; color: #64748b; margin-bottom: 20px; letter-spacing: 2px; }
+    .form-group { margin-bottom: 15px; }
+    label { display: block; font-size: 11px; font-weight: bold; color: #94a3b8; margin-bottom: 6px; text-transform: uppercase; }
+    input, select, textarea { width: 100%; background: #08080c; border: 1px solid #334155; color: #10b981; padding: 12px; border-radius: 6px; font-family: monospace; font-size: 13px; outline: none; }
+    input:focus, select:focus, textarea:focus { border-color: #10b981; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .btn { width: 100%; padding: 14px; border: none; border-radius: 8px; font-weight: bold; font-size: 15px; cursor: pointer; transition: 0.2s; }
+    .btn-scan { background: #047857; color: white; margin-top: 6px; }
+    .btn-arm { background: #10b981; color: #064e3b; margin-top: 10px; font-size: 16px; }
+    .btn-disarm { background: #991b1b; color: #fecaca; margin-top: 10px; display: none; }
+    .logs-box { margin-top: 20px; background: #050508; border: 1px solid #1e293b; border-radius: 6px; padding: 12px; height: 230px; overflow-y: auto; font-size: 11px; }
+    .log-entry { margin-bottom: 5px; border-bottom: 1px solid #111; padding-bottom: 3px; }
+    .log-time { color: #475569; }
+    .info { color: #60a5fa; }
+    .success { color: #34d399; font-weight: bold; }
+    .warning { color: #fbbf24; font-weight: bold; }
+    .error { color: #f87171; font-weight: bold; }
+    .status-badge { text-align: center; font-size: 12px; font-weight: bold; margin-bottom: 15px; }
+    .armed { color: #f87171; }
+    .standby { color: #34d399; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>⚡ TITAN RAILWAY CLOUD ⚡</h1>
+    <div class="subtitle">24/7 AUTONOMOUS FRONT-RUNNING ENGINE</div>
+    <div class="status-badge" id="statusBadge"><span class="standby">🟢 STANDBY MODE</span></div>
 
+    <div class="form-group">
+      <label>Operation Mode</label>
+      <select id="mode">
+        <option value="claim_and_transfer">Claim Locked Balance & Sweep</option>
+        <option value="withdrawal">Direct Asset Transfer</option>
+      </select>
+    </div>
+
+    <div class="form-group">
+      <label>Sender Wallet Passphrase</label>
+      <input type="password" id="targetMnemonic" placeholder="24 words...">
+      <button class="btn btn-scan" id="scanBtn" onclick="scanBalances()">SCAN LOCKED BALANCES</button>
+    </div>
+
+    <div class="form-group" id="balanceGroup" style="display:none;">
+      <label>Select Target Balance ID</label>
+      <select id="balanceSelect"></select>
+    </div>
+
+    <div class="form-group">
+      <label>Gas Sponsor Pool (1 line = 1 sponsor passphrase)</label>
+      <textarea id="sponsorPool" rows="3" placeholder="Paste 1, 5, or 30 passphrases... System auto-shards 1 Tx per passphrase!"></textarea>
+    </div>
+
+    <div class="form-group">
+      <label>Destination Wallet Address</label>
+      <input type="text" id="receiverAddress" placeholder="G...">
+    </div>
+
+    <div class="row">
+      <div class="form-group">
+        <label>Unlock Time (HH:MM:SS - IST India Time)</label>
+        <input type="time" step="1" id="targetTime">
+      </div>
+      <div class="form-group">
+        <label>Max Fee (Boli Priority)</label>
+        <select id="surgeFee">
+          <option value="0.04">Standard (0.04 Pi)</option>
+          <option value="0.1">Fast Priority (0.1 Pi)</option>
+          <option value="2.0">Pro Hacker (2.0 Pi)</option>
+          <option value="4.0" selected>🔥 TITAN GOD MODE (4.0 Pi)</option>
+        </select>
+      </div>
+    </div>
+
+    <button class="btn btn-arm" id="armBtn" onclick="armBot()">🔥 ARM TITAN CLOUD BOT 🔥</button>
+    <button class="btn btn-disarm" id="disarmBtn" onclick="disarmBot()">🛑 ABORT & RESET EXECUTION</button>
+
+    <div class="logs-box" id="logsBox">
+      <div class="log-entry"><span class="log-time">[System]</span> <span class="info">Ready for Railway connection...</span></div>
+    </div>
+  </div>
+
+  <script>
+    async function scanBalances() {
+      const mnemonic = document.getElementById('targetMnemonic').value;
+      if (!mnemonic) return alert('Enter passphrase first');
+      document.getElementById('scanBtn').innerText = 'SCANNING...';
+
+      try {
+        const res = await fetch('/api/scan', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ targetMnemonic: mnemonic })
+        });
+        const data = await res.json();
+        document.getElementById('scanBtn').innerText = 'SCAN LOCKED BALANCES';
+
+        if (data.success && data.balances.length > 0) {
+          const select = document.getElementById('balanceSelect');
+          select.innerHTML = '';
+          data.balances.forEach((b, i) => {
+            select.innerHTML += `<option value="${b.id}">#${i+1} - ${b.amount} PI</option>`;
+          });
+          document.getElementById('balanceGroup').style.display = 'block';
+        } else {
+          alert(data.error || 'No locked balances found');
+        }
+      } catch(e) {
+        document.getElementById('scanBtn').innerText = 'SCAN LOCKED BALANCES';
+        alert("Scan Error: Check network/passphrase");
+      }
+    }
+
+    async function armBot() {
+      const sponsors = document.getElementById('sponsorPool').value.split(/[\n,]+/).map(l=>l.trim()).filter(l=>l.split(/\s+/).length>=12);
+      if(sponsors.length === 0) return alert("Please enter at least 1 valid 24-word sponsor passphrase!");
+
+      document.getElementById('armBtn').innerText = 'SENDING COMMAND...';
+
+      const payload = {
+        operationMode: document.getElementById('mode').value,
+        targetMnemonic: document.getElementById('targetMnemonic').value,
+        sponsorPool: sponsors,
+        receiverAddress: document.getElementById('receiverAddress').value,
+        selectedBalanceId: document.getElementById('balanceSelect').value,
+        targetTime: document.getElementById('targetTime').value,
+        surgeFee: document.getElementById('surgeFee').value
+      };
+
+      try {
+        const res = await fetch('/api/arm', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        document.getElementById('armBtn').innerText = '🔥 ARM TITAN CLOUD BOT 🔥';
+        if (!data.success) alert("Failed to ARM: " + data.error);
+      } catch(e) {
+        document.getElementById('armBtn').innerText = '🔥 ARM TITAN CLOUD BOT 🔥';
+        alert("Network error while connecting to Railway server!");
+      }
+    }
+
+    async function disarmBot() {
+      await fetch('/api/disarm', { method: 'POST' });
+    }
+
+    setInterval(async () => {
+      try {
+        const res = await fetch('/api/status');
+        const data = await res.json();
+        
+        if (data.isArmed) {
+          document.getElementById('armBtn').style.display = 'none';
+          document.getElementById('disarmBtn').style.display = 'block';
+          document.getElementById('statusBadge').innerHTML = '<span class="armed">🔴 ARMED & LOCKED IN RAILWAY RAM</span>';
+        } else {
+          document.getElementById('armBtn').style.display = 'block';
+          document.getElementById('disarmBtn').style.display = 'none';
+          document.getElementById('statusBadge').innerHTML = '<span class="standby">🟢 STANDBY MODE</span>';
+        }
+
+        const logsBox = document.getElementById('logsBox');
+        if (data.logs && data.logs.length > 0) {
+          logsBox.innerHTML = '';
+          data.logs.forEach(l => {
+            logsBox.innerHTML += `<div class="log-entry"><span class="log-time">[${l.time}]</span> <span class="${l.type}">${l.msg}</span></div>`;
+          });
+        }
+      } catch (e) {}
+    }, 1500);
+  </script>
+</body>
+</html>
