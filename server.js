@@ -50,12 +50,11 @@ async function getDynamicNetworkOffset() {
             await fetch(`${HORIZON_URL}/fee_stats`);
             pings.push(Date.now() - start);
         } catch (e) {
-            pings.push(300); // Fallback if packet drops
+            pings.push(300);
         }
     }
     const avgPing = Math.round(pings.reduce((a, b) => a + b, 0) / pings.length);
-    // Auto Offset = Average Ping + 150ms internal NodeJS execution delay
-    const autoOffset = avgPing + 150;
+    const autoOffset = avgPing + 150; // Ping + Internal Node Execution
     addLog(`🎯 Live Ping: ${avgPing}ms | AUTO PRE-FIRE OFFSET SET TO: ${autoOffset}ms`, "success");
     return autoOffset;
 }
@@ -90,17 +89,25 @@ app.post('/api/arm', async (req, res) => {
 
     try {
         const [targetH, targetM, targetS] = targetTime.split(':').map(Number);
-        const nowIST = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Kolkata"}));
         
-        let targetIST = new Date(nowIST);
+        // 1. EXACT MILLISECOND MATH (Render Safe Timezone Fix)
+        const now = new Date();
+        const nowISTString = now.toLocaleString("en-US", {timeZone: "Asia/Kolkata"});
+        const nowIST = new Date(nowISTString);
+        
+        let targetIST = new Date(nowISTString);
         targetIST.setHours(targetH, targetM, targetS || 0, 0);
         
         if (targetIST.getTime() <= nowIST.getTime()) {
-            targetIST.setDate(targetIST.getDate() + 1);
+            targetIST.setDate(targetIST.getDate() + 1); // Move to tomorrow if time passed
         }
         
         const delayMs = targetIST.getTime() - nowIST.getTime();
-        addLog(`Target locked: ${targetTime} IST. Countdown: ${(delayMs/1000).toFixed(1)}s`, "info");
+        
+        // 2. UNIX TIMESTAMP FOR TIMEBOUNDS (Crucial for tx_too_early logic)
+        const targetUnix = Math.floor((Date.now() + delayMs) / 1000);
+        
+        addLog(`Target locked: ${targetTime} IST. Precise Countdown: ${(delayMs/1000).toFixed(3)}s`, "info");
 
         const targetKp = getKeypair(targetMnemonic);
         if (!targetKp) throw new Error("Invalid Sender Passphrase");
@@ -123,15 +130,21 @@ app.post('/api/arm', async (req, res) => {
         const OperationClass = StellarSdk.Operation;
         const AssetClass = StellarSdk.Asset;
 
-        const tasks = sponsorPool.map(async (mn, i) => {
+        // 3. MULTI-SEQUENCE PACKET BUILDER (Supports Multiple Sponsor Wallets)
+        const tasks = sponsorPool.map(async (mn) => {
             const spKp = getKeypair(mn);
             if (!spKp) return null;
             const acc = await piServer.loadAccount(spKp.publicKey());
             
             const builder = new TxBuilderClass(new AccountClass(spKp.publicKey(), acc.sequenceNumber()), {
                 fee: Math.round(parseFloat(surgeFee) * 10000000).toString(),
-                networkPassphrase: NETWORK_PASSPHRASE
-            }).setTimeout(600);
+                networkPassphrase: NETWORK_PASSPHRASE,
+                // 🔥 THE MAGIC: Prevents 'op_cannot_claim' Sequence Burn!
+                timebounds: {
+                    minTime: targetUnix.toString(),
+                    maxTime: (targetUnix + 600).toString() 
+                }
+            });
 
             if (operationMode === 'claim_and_transfer') {
                 builder.addOperation(OperationClass.claimClaimableBalance({
@@ -150,14 +163,13 @@ app.post('/api/arm', async (req, res) => {
             const tx = builder.build();
             tx.sign(targetKp);
             tx.sign(spKp);
-            return { xdr: tx.toXDR(), wave: [1, 2, 3][i % 3] };
+            return { xdr: tx.toXDR() };
         });
 
         const packets = (await Promise.all(tasks)).filter(Boolean);
-        addLog(`✅ ${packets.length} Packets pre-signed & locked in Railway RAM!`, "success");
+        addLog(`✅ ${packets.length} Packets pre-signed with TimeBounds & Locked in RAM!`, "success");
         
-        // 🔥 TRIGGER AUTO-PING CALIBRATION 8 SECONDS BEFORE T-0
-        let dynamicOffset = 300; // Default fallback
+        let dynamicOffset = 300; 
         const pingMeasureDelay = Math.max(0, delayMs - 8000);
         
         const radarTimer = setTimeout(async () => {
@@ -165,35 +177,58 @@ app.post('/api/arm', async (req, res) => {
         }, pingMeasureDelay);
         botState.timers.push(radarTimer);
 
-        // 🔥 ADAPTIVE FIRING ENGINE (Uses exact measured dynamicOffset)
-        [3, 2, 1].forEach(wave => {
-            const waves = packets.filter(p => p.wave === wave);
-            if (waves.length === 0) return;
-
-            // Wave 3, 2, 1 chalega dynamic offset ke sath
-            const waveDelay = Math.max(0, delayMs - ((wave - 1) * 700));
+        // 4. 🔥 ASYNC GATLING GUN ENGINE (Spams every 300ms, starts 3 seconds early)
+        const startDelay = Math.max(0, delayMs - 3000 - dynamicOffset);
+        
+        const masterTimer = setTimeout(() => {
+            addLog(`💥 GATLING GUN ACTIVATED! SPAMMING HORIZON EVERY 300ms...`, "warning");
             
-            const timer = setTimeout(() => {
-                // Fire time pe offset deduct karte hain dynamically
-                setTimeout(() => {
-                    addLog(`💥 AUTO-MS FIRE WAVE T-${wave}s (${waves.length} SHOTS)...`, "warning");
-                    waves.forEach((w, idx) => {
-                        fetch("https://api.mainnet.minepi.com/transactions", {
-                            method: 'POST',
-                            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-                            body: `tx=${encodeURIComponent(w.xdr)}`
-                        }).then(r => r.json()).then(d => {
-                            if (d.hash) addLog(`[Shot #${idx+1}] 🏆 VICTORY! Hash: ${d.hash}`, "success");
-                            else addLog(`[Shot #${idx+1}] ❌ Failed: ${JSON.stringify(d?.extras?.result_codes || d.title)}`, "error");
-                        }).catch(e => addLog(`[Shot #${idx+1}] Network Error`, "error"));
-                    });
-                    if (wave === 1) botState.isArmed = false;
-                }, 0);
-            }, Math.max(0, waveDelay - dynamicOffset));
+            let shotCount = 0;
+            let successFound = false;
 
-            botState.timers.push(timer);
-        });
+            const fireSpam = () => {
+                if (successFound) return;
+                shotCount++;
+                
+                if (shotCount > 100) { // Stops after 30 seconds to prevent endless loop
+                    clearInterval(spamInterval);
+                    botState.isArmed = false;
+                    addLog(`🛑 GATLING GUN STOPPED (Time window closed).`, "info");
+                    return;
+                }
 
+                packets.forEach((w) => {
+                    fetch("https://api.mainnet.minepi.com/transactions", {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+                        body: `tx=${encodeURIComponent(w.xdr)}`
+                    }).then(r => r.json()).then(d => {
+                        if (successFound) return; 
+                        
+                        if (d.hash) {
+                            successFound = true;
+                            addLog(`🏆 VICTORY! Transaction Mined! Hash: ${d.hash}`, "success");
+                            clearInterval(spamInterval);
+                            botState.isArmed = false;
+                        } else {
+                            let errCode = JSON.stringify(d?.extras?.result_codes || d.title);
+                            
+                            // Mute expected errors (tx_too_early means we are knocking, tx_bad_seq means we won elsewhere)
+                            if (!errCode.includes("tx_too_early") && !errCode.includes("tx_bad_seq")) {
+                                addLog(`[Shot #${shotCount}] ❌ Failed: ${errCode}`, "error");
+                            }
+                        }
+                    }).catch(e => {}); 
+                });
+            };
+
+            fireSpam(); // Fire exact first shot immediately
+            const spamInterval = setInterval(fireSpam, 300); // Keep firing every 300ms
+            botState.timers.push(spamInterval);
+
+        }, startDelay);
+
+        botState.timers.push(masterTimer);
         res.json({ success: true });
 
     } catch (e) {
